@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/fsouza/fake-gcs-server/internal/checksum"
 	"github.com/pkg/xattr"
 )
@@ -356,13 +358,35 @@ func openObjectAndSetSize(obj *StreamingObject, path string) error {
 func (s *storageFS) getObjectAttrs(bucketName, objectName string) (ObjectAttrs, error) {
 	path := filepath.Join(s.rootDir, url.PathEscape(bucketName), objectName)
 	encoded, err := s.mh.read(path)
-	if err != nil {
-		return ObjectAttrs{}, err
-	}
-
 	var attrs ObjectAttrs
-	if err = json.Unmarshal(encoded, &attrs); err != nil {
-		return ObjectAttrs{}, err
+	if err != nil {
+		if fs, err := os.Stat(path); err == nil {
+			attrs = ObjectAttrs{}
+			attrs.BucketName = bucketName
+			attrs.ACL = []storage.ACLRule{
+				{
+					Entity: "projectOwner-test-project",
+					Role:   "OWNER",
+				},
+			}
+			v, err := os.ReadFile(path) //read the content of file
+			if err != nil {
+				fmt.Println(err)
+				return ObjectAttrs{}, err
+			}
+			attrs.ContentType = mime.TypeByExtension(filepath.Ext(path))
+			attrs.Crc32c = checksum.EncodedCrc32cChecksum(v)
+			attrs.Md5Hash = checksum.EncodedMd5Hash(v)
+			// TODO: Created, Modified
+			attrs.Generation = fs.ModTime().UnixNano()
+			attrs.Etag = "\"" + attrs.Md5Hash + "\""
+		} else {
+			return ObjectAttrs{}, err
+		}
+	} else {
+		if err = json.Unmarshal(encoded, &attrs); err != nil {
+			return ObjectAttrs{}, err
+		}
 	}
 
 	info, err := os.Stat(path)
